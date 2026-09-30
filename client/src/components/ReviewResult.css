@@ -1,0 +1,308 @@
+.review-result {
+  margin-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-5);
+}
+
+/* =========================
+   Overall Score
+   ========================= */
+
+.score-overview {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+
+.score-circle {
+  width: 100px;
+  height: 100px;
+  border: 4px solid var(--color-accent);
+  border-radius: 50%;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 2px;
+  padding-top: 30px;
+  box-sizing: border-box;
+}
+
+.score-circle .score {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--color-accent);
+  letter-spacing: -0.03em;
+}
+
+.score-circle .score-label {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.score-overview-text h2 {
+  font-size: 18px;
+  margin: 0 0 var(--space-1) 0;
+}
+
+.score-overview-text p {
+  color: var(--color-text-muted);
+  margin: 0;
+  font-size: 14px;
+}
+
+/* Score levels */
+
+.score-circle.excellent {
+  border-color: #1f8f5f;
+}
+
+.score-circle.excellent .score {
+  color: #1f8f5f;
+}
+
+.score-circle.good {
+  border-color: #3b82f6;
+}
+
+.score-circle.good .score {
+  color: #3b82f6;
+}
+
+.score-circle.acceptable {
+  border-color: #d99a00;
+}
+
+.score-circle.acceptable .score {
+  color: #d99a00;
+}
+
+.score-circle.poor,
+.score-circle.very-poor {
+  border-color: var(--color-critical);
+}
+
+.score-circle.poor .score,
+.score-circle.very-poor .score {
+  color: var(--color-critical);
+}
+
+/* =========================
+   Score Breakdown
+   ========================= */
+
+.score-breakdown {
+  margin-bottom: var(--space-5);
+}
+
+.score-breakdown h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 var(--space-3) 0;
+}
+
+.score-breakdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.score-item {
+  padding: var(--space-3);
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.score-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.score-item-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.score-item-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.score-bar {
+  width: 100%;
+  height: 8px;
+  background-color: var(--color-border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.score-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.score-bar-fill.excellent {
+  background-color: #1f8f5f;
+}
+
+.score-bar-fill.good {
+  background-color: #3b82f6;
+}
+
+.score-bar-fill.acceptable {
+  background-color: #d99a00;
+}
+
+.score-bar-fill.poor,
+.score-bar-fill.very-poor {
+  background-color: var(--color-critical);
+}
+
+.score-weight {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+/* =========================
+   Summary
+   ========================= */
+
+.summary {
+  color: var(--color-text-muted);
+  margin: var(--space-2) 0 var(--space-5) 0;
+  line-height: 1.6;
+}
+
+/* =========================
+   Sections
+   ========================= */
+
+.review-result h2 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 0 0 var(--space-3) 0;
+}
+
+.issues {
+  margin-bottom: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.issue {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+}
+
+.issue.sev-critical {
+  border-left-color: var(--color-critical);
+}
+
+.issue.sev-high {
+  border-left-color: var(--color-high);
+}
+
+.issue.sev-medium {
+  border-left-color: var(--color-medium);
+}
+
+.issue.sev-low {
+  border-left-color: var(--color-low);
+}
+
+.issue-header {
+  display: flex;
+  gap: var(--space-2);
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-1);
+}
+
+.issue-severity {
+  font-weight: 600;
+}
+
+.issue-title {
+  font-weight: 600;
+  margin: var(--space-1) 0;
+}
+
+.issue-explanation,
+.issue-suggestion {
+  color: var(--color-text-muted);
+  font-size: 14px;
+  margin: var(--space-1) 0;
+  line-height: 1.5;
+}
+
+/* =========================
+   Strengths
+   ========================= */
+
+.strengths {
+  margin-bottom: var(--space-5);
+}
+
+.strengths ul {
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+}
+
+.strengths li {
+  margin-bottom: var(--space-1);
+}
+
+/* =========================
+   Improved Code
+   ========================= */
+
+.improved-code {
+  margin-bottom: var(--space-5);
+}
+
+.improved-code pre {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-3);
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* =========================
+   Mobile
+   ========================= */
+
+@media (max-width: 600px) {
+  .score-overview {
+    align-items: flex-start;
+  }
+
+  .score-circle {
+    width: 84px;
+    height: 84px;
+    padding-top: 25px;
+  }
+
+  .score-circle .score {
+    font-size: 27px;
+  }
+
+  .score-overview-text h2 {
+    font-size: 16px;
+  }
+}.result-summary{display:flex;justify-content:space-between;gap:20px;padding:18px;background:var(--color-surface-raised);border:1px solid var(--color-border);border-radius:10px;margin:20px 0}.result-summary span{font-size:12px;font-weight:800;text-transform:uppercase;color:var(--color-accent);letter-spacing:.08em}.result-summary p{margin:5px 0 0}.issue-count{min-width:58px;text-align:center;font-size:25px;font-weight:800;color:var(--color-accent)}.issue-count small{display:block;font-size:10px;color:var(--color-text-muted);font-weight:600}.improved-heading{display:flex;justify-content:space-between;align-items:center}.improved-heading button{background:transparent;color:var(--color-accent);border:1px solid var(--color-border);border-radius:6px;padding:7px 10px;cursor:pointer}.improved-heading button:hover{border-color:var(--color-accent)}

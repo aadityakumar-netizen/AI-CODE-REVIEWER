@@ -1,0 +1,86 @@
+/* Design tokens — every color, font, and spacing value used across the
+   app is defined here ONCE as a CSS variable. Components reference the
+   variable (var(--color-accent)) instead of hardcoding hex values, so
+   the whole visual identity can be adjusted from this one file. */
+
+:root {
+  /* Color: deep slate rather than flat black, warm amber as the one
+     accent color, violet reserved for secondary/informational use. */
+  --color-bg: #11131a;
+  --color-surface: #1a1d28;
+  --color-surface-raised: #212433;
+  --color-border: #2a2e3d;
+  --color-text: #e7e8ed;
+  --color-text-muted: #8d90a0;
+
+  --color-accent: #f2b84b;
+  --color-accent-text: #1a1400;
+  --color-secondary: #8b7fd9;
+
+  /* Severity colors for review issues — the one place in the UI
+     where color actively encodes meaning rather than decorates. */
+  --color-critical: #e5484d;
+  --color-high: #f2994a;
+  --color-medium: #f2c94c;
+  --color-low: #5b9bd5;
+
+  /* Type: sans for UI text, mono reserved ONLY for actual code content. */
+  --font-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'Courier New', monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --space-6: 48px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
+
+a {
+  color: var(--color-secondary);
+}
+
+/* Visible keyboard focus everywhere — never remove this without
+   replacing it with something equally visible. */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

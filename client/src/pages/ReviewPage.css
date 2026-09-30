@@ -1,0 +1,96 @@
+.review-page h1 {
+  font-size: 24px;
+  font-weight: 600;
+  margin: 0 0 var(--space-1) 0;
+  letter-spacing: -0.01em;
+}
+
+.page-subtitle {
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-5) 0;
+  font-size: 14px;
+}
+
+.review-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.field-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-muted);
+}
+
+.language-select {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  width: 220px;
+}
+
+.code-editor {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+  padding: var(--space-3);
+  resize: vertical;
+}
+
+.code-editor::placeholder {
+  color: var(--color-text-muted);
+}
+
+.review-button {
+  align-self: flex-start;
+  background-color: var(--color-accent);
+  color: var(--color-accent-text);
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-4);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.review-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.review-button:disabled {
+  background-color: var(--color-border);
+  color: var(--color-text-muted);
+  cursor: not-allowed;
+}
+
+.error-message {
+  margin-top: var(--space-4);
+  color: var(--color-critical);
+  font-size: 14px;
+}
+.review-button.reviewed {
+  background: #1f8f5f;
+  color: #ffffff;
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+
+.review-button.reviewed:hover {
+  background: #1f8f5f;
+}.github-context{display:inline-block;margin:0 0 18px;padding:7px 10px;border:1px solid var(--color-border);border-radius:7px;color:var(--color-text-muted);font-size:12px}.github-context strong{color:var(--color-accent)}
