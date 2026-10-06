@@ -1,0 +1,1332 @@
+--- /mnt/data/step3check/server/src/app.js
+const express = require('express');
+const path = require('path');
+const cors = require('cors');
+const helmet = require('helmet');
+const env = require('./config/env');
+const errorHandler = require('./middleware/errorHandler');
+const notFound = require('./middleware/notFound');
+const { generalLimiter } = require('./middleware/rateLimiters');
+
+const app = express();
+
+// Sets a batch of security-related HTTP headers (e.g. disabling
+// X-Powered-By, blocking MIME-sniffing) that are good defaults for
+// any Express API and cost nothing to enable.
+app.use(helmet());
+
+// Restrict cross-origin requests to the known frontend URL rather than
+// allowing any origin ('*'). In development this is the Vite dev
+// server; in production it would be set to the deployed frontend's
+// real URL via CORS_ORIGIN.
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow Vite's changing localhost port during development.
+      if (env.nodeEnv === 'development') {
+        if (!origin || /^https?:\/\/localhost:\d+$/.test(origin)) {
+          return callback(null, true);
+        }
+      }
+
+      if (!origin || origin === env.corsOrigin) {
+        return callback(null, true);
+      }
+
+      return callback(new Error('CORS origin not allowed.'));
+    },
+  })
+);
+
+// Applies to every route below this line.
+app.use(generalLimiter);
+
+// Parses incoming JSON request bodies into req.body.
+// Needed as soon as any route accepts a POST/PUT with a JSON payload
+// (e.g. POST /api/reviews with { language, sourceCode }).
+app.use(express.json({ limit: '1mb' }));
+
+// Simple health check — useful for confirming the server is alive,
+// and for things like uptime monitors or deployment platforms later.
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ success: true, message: 'Server is running.' });
+});
+
+// Real feature routes
+app.use('/api/reviews', require('./routes/reviews'));
+app.use('/api/auth', require('./routes/auth'));
+app.use('/api/github', require('./routes/github'));
+
+// In production, serve the built React app from this same server —
+// the simplest deployment shape for a small project (one service,
+// one URL, no separate static host to configure). In development,
+// the frontend runs on its own Vite dev server instead, so this
+// block is skipped entirely.
+if (env.nodeEnv === 'production') {
+  const clientDistPath = path.join(__dirname, '../../client/dist');
+  app.use(express.static(clientDistPath));
+
+  // Any GET request that isn't an API route AND doesn't look like a
+  // file request (no extension, e.g. /history) falls through to the
+  // SPA's index.html — so client-side routes work on a hard refresh.
+  // Requests for an actual file that's missing (e.g. a stale JS chunk)
+  // still correctly 404 instead of silently getting index.html back.
+  app.get(/^(?!\/api).*/, (req, res, next) => {
+    const looksLikeFileRequest = path.extname(req.path) !== '';
+    if (looksLikeFileRequest) return next();
+    res.sendFile(path.join(clientDistPath, 'index.html'));
+  });
+}
+
+// Order matters: notFound only runs if nothing above matched,
+// and errorHandler must be registered LAST so Express treats it
+// as the error-handling middleware.
+app.use(notFound);
+app.use(errorHandler);
+
+module.exports = app;
+--- /mnt/data/step3check/server/src/config/db.js
+const mongoose = require('mongoose');
+const env = require('./env');
+
+// Connects to MongoDB and resolves once the connection is ready.
+// Kept separate from server.js so server.js only has to say
+// "connect, then start listening" without knowing the details of *how*.
+async function connectDB() {
+  if (!env.mongodbUri) {
+    // Fail fast and loud: a server with no DB configured shouldn't
+    // silently boot and accept requests it can't actually fulfill.
+    throw new Error('MONGODB_URI is not set. Check your .env file.');
+  }
+
+  await mongoose.connect(env.mongodbUri);
+
+  console.log(`MongoDB connected: ${mongoose.connection.host}`);
+}
+
+module.exports = connectDB;
+--- /mnt/data/step3check/server/src/config/env.js
+// Loads environment variables once, in one place, and exposes them
+// as a plain object. Every other file imports FROM here instead of
+// reading process.env directly — so if a variable name ever changes,
+// there's exactly one line to fix.
+
+require('dotenv').config();
+
+const env = {
+  port: process.env.PORT || 5000,
+  nodeEnv: process.env.NODE_ENV || 'development',
+  mongodbUri: process.env.MONGODB_URI,
+  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  aiProvider: process.env.AI_PROVIDER || 'ollama',
+  ollamaBaseUrl: process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434',
+  ollamaModel: process.env.OLLAMA_MODEL || 'codellama',
+  jwtSecret: process.env.JWT_SECRET,
+  jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+};
+
+module.exports = env;
+--- /mnt/data/step3check/server/src/controllers/authController.js
+const User = require('../models/User');
+const { generateToken } = require('../utils/token');
+
+async function register(req, res, next) {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      const error = new Error('Email and password are required.');
+      error.statusCode = 400;
+      return next(error);
+    }
+
+    const existing = await User.findOne({ email: email.toLowerCase() });
+    if (existing) {
+      const error = new Error('An account with that email already exists.');
+      error.statusCode = 409;
+      return next(error);
+    }
+
+    const user = await User.create({ email, password });
+    const token = generateToken(user._id);
+
+    res.status(201).json({ success: true, data: { email: user.email, token } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function login(req, res, next) {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      const error = new Error('Email and password are required.');
+      error.statusCode = 400;
+      return next(error);
+    }
+
+    // password has `select: false` on the schema, so it must be
+    // explicitly requested here to compare it.
+    const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+
+    // Deliberately the SAME error for "no such user" and "wrong
+    // password" — telling an attacker which one is true is a real
+    // information leak (it confirms which emails have accounts).
+    const invalidCredentialsError = () => {
+      const error = new Error('Invalid email or password.');
+      error.statusCode = 401;
+      return error;
+    };
+
+    if (!user) return next(invalidCredentialsError());
+
+    const isMatch = await user.comparePassword(password);
+    if (!isMatch) return next(invalidCredentialsError());
+
+    const token = generateToken(user._id);
+    res.status(200).json({ success: true, data: { email: user.email, token } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function getMe(req, res, next) {
+  try {
+    const user = await User.findById(req.user.id);
+
+    if (!user) {
+      const error = new Error('User not found.');
+      error.statusCode = 404;
+      return next(error);
+    }
+
+    res.status(200).json({ success: true, data: { email: user.email, id: user._id } });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = { register, login, getMe };
+--- /mnt/data/step3check/server/src/controllers/githubController.js
+const ALLOWED_EXTENSIONS = new Set(['.js','.jsx','.ts','.tsx','.py','.java','.go','.cpp','.cc','.c','.h','.hpp']);
+const IGNORE = /(^|\/)(node_modules|dist|build|coverage|\.git)(\/|$)/i;
+const MAX_FILES = 12;
+const MAX_FILE_SIZE = 70000;
+
+function parseRepoUrl(value){
+  try {
+    const url = new URL(value.trim());
+    if (url.hostname !== 'github.com') return null;
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) return null;
+    return { owner: parts[0], repo: parts[1].replace(/\.git$/,'') };
+  } catch { return null; }
+}
+
+async function githubRequest(url){
+  const response = await fetch(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'AI-Code-Reviewer' } });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = new Error(data?.message || `GitHub request failed (${response.status}).`);
+    error.statusCode = response.status === 404 ? 404 : 502;
+    throw error;
+  }
+  return data;
+}
+
+async function getRepository(req,res,next){
+  try {
+    const parsed = parseRepoUrl(req.query.url || '');
+    if (!parsed) { const e=new Error('Enter a valid public GitHub repository URL.'); e.statusCode=400; return next(e); }
+    const repo = await githubRequest(`https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}`);
+    const tree = await githubRequest(`https://api.github.com/repos/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/git/trees/${repo.default_branch}?recursive=1`);
+    const files = (tree.tree || []).filter(x => x.type === 'blob' && !IGNORE.test(x.path) && ALLOWED_EXTENSIONS.has(x.path.slice(x.path.lastIndexOf('.')).toLowerCase()) && Number(x.size || 0) <= MAX_FILE_SIZE).slice(0,MAX_FILES);
+    const results=[];
+    for(const file of files){
+      const raw = await fetch(`https://raw.githubusercontent.com/${encodeURIComponent(parsed.owner)}/${encodeURIComponent(parsed.repo)}/${encodeURIComponent(repo.default_branch)}/${file.path}`);
+      if(!raw.ok) continue;
+      const content = await raw.text();
+      results.push({path:file.path,content:content.slice(0,MAX_FILE_SIZE)});
+    }
+    res.json({success:true,data:{name:repo.full_name,description:repo.description,branch:repo.default_branch,files:results,totalFiles:files.length,repositoryUrl:repo.html_url}});
+  } catch(e){next(e);}
+}
+module.exports={getRepository};
+--- /mnt/data/step3check/server/src/controllers/reviewController.js
+const mongoose = require('mongoose');
+const Review = require('../models/Review');
+const { generateReview } = require('../services/aiReviewService');
+const validateAIOutput = require('../utils/validateAIOutput');
+
+async function createReview(req, res, next) {
+  try {
+    if (!req.user || !req.user.id) {
+      const error = new Error('User authentication is required.');
+      error.statusCode = 401;
+      return next(error);
+    }
+
+    const { language, sourceCode } = req.body;
+
+    const aiOutput = await generateReview({
+      language,
+      sourceCode,
+    });
+
+    validateAIOutput(aiOutput);
+
+    const review = await Review.create({
+      user: req.user.id,
+      language,
+      sourceCode,
+      score: aiOutput.score,
+      scoreBreakdown: aiOutput.scoreBreakdown,
+      summary: aiOutput.summary,
+      issues: aiOutput.issues || [],
+      strengths: aiOutput.strengths || [],
+      improvedCode: aiOutput.improvedCode || '',
+    });
+
+    res.status(201).json({
+      success: true,
+      data: review,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function getReviews(req, res, next) {
+  try {
+    if (!req.user || !req.user.id) {
+      const error = new Error('User authentication is required.');
+      error.statusCode = 401;
+      return next(error);
+    }
+
+    const reviews = await Review.find({
+      user: req.user.id,
+    })
+      .select('language score summary issues createdAt')
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      data: reviews,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function getReviewById(req, res, next) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      const error = new Error('Invalid review ID.');
+      error.statusCode = 400;
+      return next(error);
+    }
+
+    const review = await Review.findOne({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+
+    if (!review) {
+      const error = new Error('Review not found.');
+      error.statusCode = 404;
+      return next(error);
+    }
+
+    res.status(200).json({
+      success: true,
+      data: review,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function deleteReview(req, res, next) {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      const error = new Error('Invalid review ID.');
+      error.statusCode = 400;
+      return next(error);
+    }
+
+    const review = await Review.findOneAndDelete({
+      _id: req.params.id,
+      user: req.user.id,
+    });
+
+    if (!review) {
+      const error = new Error('Review not found.');
+      error.statusCode = 404;
+      return next(error);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Review deleted.',
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+module.exports = {
+  createReview,
+  getReviews,
+  getReviewById,
+  deleteReview,
+};--- /mnt/data/step3check/server/src/middleware/auth.js
+const { verifyToken } = require('../utils/token');
+
+function protect(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const error = new Error('Not authorized. No token provided.');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  const token = authHeader.substring(7).trim();
+
+  if (!token) {
+    const error = new Error('Not authorized. No token provided.');
+    error.statusCode = 401;
+    return next(error);
+  }
+
+  try {
+    const decoded = verifyToken(token);
+
+    if (!decoded || !decoded.id) {
+      const error = new Error('Not authorized. Invalid token.');
+      error.statusCode = 401;
+      return next(error);
+    }
+
+    req.user = {
+      id: decoded.id,
+    };
+
+    next();
+  } catch (error) {
+    error.statusCode = 401;
+    error.message = 'Not authorized. Token is invalid or expired.';
+    next(error);
+  }
+}
+
+module.exports = protect;--- /mnt/data/step3check/server/src/middleware/errorHandler.js
+// Express recognizes an error-handling middleware by its 4 arguments
+// (err, req, res, next) — that signature is what tells Express to route
+// errors here instead of treating it as a normal middleware.
+//
+// Every route/controller can just call next(err) and it lands here,
+// so error formatting lives in ONE place instead of being repeated in
+// every controller with its own try/catch res.status(...).json(...).
+
+// eslint-disable-next-line no-unused-vars
+function errorHandler(err, req, res, next) {
+  console.error(err);
+
+  let statusCode = err.statusCode || 500;
+  let message = err.message || 'Something went wrong on the server.';
+
+  // Mongoose throws a CastError when a value can't be converted to the
+  // type the schema expects — most commonly, a malformed ObjectId in a
+  // URL param like /api/reviews/not-a-real-id. That's a client mistake
+  // (bad input), not a server failure, so it should be a 400, not a 500 —
+  // and the client shouldn't see Mongoose's internal error wording.
+  if (err.name === 'CastError') {
+    statusCode = 400;
+    message = `Invalid ${err.path}: ${err.value}`;
+  }
+
+  res.status(statusCode).json({
+    success: false,
+    // Never leak stack traces or internal details to the client —
+    // only a safe, human-readable message.
+    message,
+  });
+}
+
+module.exports = errorHandler;
+--- /mnt/data/step3check/server/src/middleware/notFound.js
+// Runs only if no route above it matched. Turns an unmatched request
+// into a proper 404 error object and hands it to errorHandler, instead
+// of Express's default plain-text "Cannot GET /whatever" page.
+function notFound(req, res, next) {
+  const error = new Error(`Route not found: ${req.originalUrl}`);
+  error.statusCode = 404;
+  next(error);
+}
+
+module.exports = notFound;
+--- /mnt/data/step3check/server/src/middleware/rateLimiters.js
+const rateLimit = require('express-rate-limit');
+
+// A general ceiling on any single client hammering the API.
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many requests. Please try again later.' },
+});
+
+// A much stricter limit specifically on review creation — each one
+// triggers a real AI call, which is slow and (with a paid provider)
+// costs money. This is the endpoint worth protecting most.
+const reviewCreationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many review requests. Please slow down.' },
+});
+
+module.exports = { generalLimiter, reviewCreationLimiter };
+--- /mnt/data/step3check/server/src/middleware/validateReview.js
+// Runs BEFORE the controller. The client now only sends `language` and
+// `sourceCode` — score/summary/issues/etc. are generated by the AI
+// service, not supplied by whoever calls the API (see Phase 11).
+function validateReview(req, res, next) {
+  const { language, sourceCode } = req.body;
+
+  const errors = [];
+
+  if (!language || typeof language !== 'string') {
+    errors.push('language is required and must be a string.');
+  }
+
+  if (!sourceCode || typeof sourceCode !== 'string') {
+    errors.push('sourceCode is required and must be a string.');
+  }
+
+  if (errors.length > 0) {
+    return res.status(400).json({ success: false, message: errors.join(' ') });
+  }
+
+  next();
+}
+
+module.exports = validateReview;
+--- /mnt/data/step3check/server/src/models/Review.js
+const mongoose = require('mongoose');
+
+const issueSchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ['bug', 'security', 'performance', 'style'],
+      required: true,
+    },
+
+    severity: {
+      type: String,
+      enum: ['low', 'medium', 'high', 'critical'],
+      required: true,
+    },
+
+    line: {
+      type: Number,
+    },
+
+    title: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    explanation: {
+      type: String,
+      required: true,
+    },
+
+    suggestion: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    _id: false,
+  }
+);
+
+const reviewSchema = new mongoose.Schema(
+  {
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
+
+    language: {
+      type: String,
+      required: true,
+      trim: true,
+      lowercase: true,
+    },
+
+    sourceCode: {
+      type: String,
+      required: true,
+    },
+
+    score: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+
+    scoreBreakdown: {
+      correctness: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100,
+      },
+
+      security: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100,
+      },
+
+      performance: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100,
+      },
+
+      maintainability: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100,
+      },
+
+      quality: {
+        type: Number,
+        required: true,
+        min: 0,
+        max: 100,
+      },
+    },
+
+    summary: {
+      type: String,
+      required: true,
+    },
+
+    issues: {
+      type: [issueSchema],
+      default: [],
+    },
+
+    strengths: {
+      type: [String],
+      default: [],
+    },
+
+    improvedCode: {
+      type: String,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+module.exports = mongoose.model('Review', reviewSchema);--- /mnt/data/step3check/server/src/models/User.js
+const mongoose = require('mongoose');
+const bcrypt = require('bcryptjs');
+
+const userSchema = new mongoose.Schema(
+  {
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      lowercase: true,
+    },
+    password: {
+      type: String,
+      required: true,
+      select: false,
+    },
+  },
+  { timestamps: true }
+);
+
+userSchema.pre('save', async function hashPassword() {
+  if (!this.isModified('password')) {
+    return;
+  }
+
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+});
+
+userSchema.methods.comparePassword = function comparePassword(candidate) {
+  return bcrypt.compare(candidate, this.password);
+};
+
+module.exports = mongoose.model('User', userSchema);--- /mnt/data/step3check/server/src/routes/auth.js
+const express = require('express');
+const protect = require('../middleware/auth');
+const { register, login, getMe } = require('../controllers/authController');
+
+const router = express.Router();
+
+router.post('/register', register);
+router.post('/login', login);
+router.get('/me', protect, getMe);
+
+module.exports = router;
+--- /mnt/data/step3check/server/src/routes/github.js
+const express = require('express');
+const protect = require('../middleware/auth');
+const { getRepository } = require('../controllers/githubController');
+const router = express.Router();
+router.use(protect);
+router.get('/repository', getRepository);
+module.exports = router;
+--- /mnt/data/step3check/server/src/routes/reviews.js
+const express = require('express');
+
+const protect = require('../middleware/auth');
+const validateReview = require('../middleware/validateReview');
+const { reviewCreationLimiter } = require('../middleware/rateLimiters');
+
+const {
+  createReview,
+  getReviews,
+  getReviewById,
+  deleteReview,
+} = require('../controllers/reviewController');
+
+const router = express.Router();
+
+// All review routes require authentication
+router.use(protect);
+
+router.post(
+  '/',
+  reviewCreationLimiter,
+  validateReview,
+  createReview
+);
+
+router.get('/', getReviews);
+
+router.get('/:id', getReviewById);
+
+router.delete('/:id', deleteReview);
+
+module.exports = router;--- /mnt/data/step3check/server/src/server.js
+const app = require('./app');
+const env = require('./config/env');
+const connectDB = require('./config/db');
+
+// Connect to the database FIRST, and only start accepting HTTP
+// requests once that succeeds. If the DB connection fails, the
+// process exits instead of running in a broken half-working state.
+async function startServer() {
+  try {
+    await connectDB();
+
+    app.listen(env.port, () => {
+      console.log(`Server running in ${env.nodeEnv} mode on port ${env.port}`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error.message);
+    process.exit(1);
+  }
+}
+
+startServer();
+--- /mnt/data/step3check/server/src/services/aiProviders/index.js
+const env = require('../../config/env');
+const ollamaProvider = require('./ollamaProvider');
+
+// Every provider module must implement the same shape: { complete(prompt) }.
+// Adding a new provider later (e.g. a hosted API) means writing one new
+// file with a `complete` function and adding one line to this map —
+// nothing else in the app needs to know or care which provider is active.
+const providers = {
+  ollama: ollamaProvider,
+};
+
+function getAIProvider() {
+  const provider = providers[env.aiProvider];
+
+  if (!provider) {
+    throw new Error(
+      `Unknown AI_PROVIDER "${env.aiProvider}". Supported providers: ${Object.keys(providers).join(', ')}`
+    );
+  }
+
+  return provider;
+}
+
+module.exports = getAIProvider;
+--- /mnt/data/step3check/server/src/services/aiProviders/ollamaProvider.js
+const env = require('../../config/env');
+
+async function complete(prompt) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000);
+
+  try {
+    const response = await fetch(`${env.ollamaBaseUrl}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: env.ollamaModel,
+        prompt,
+        stream: false,
+        format: 'json',
+        options: {
+          temperature: 0,
+          num_predict: 1200,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Ollama request failed with status ${response.status}: ${text}`
+      );
+    }
+
+    const data = await response.json();
+    const result = typeof data.response === 'string' ? data.response.trim() : '';
+
+    console.log('OLLAMA RAW RESPONSE:', result);
+
+    if (!result) {
+      throw new Error('Ollama returned an empty response.');
+    }
+
+    return result;
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error('Ollama review timed out after 180 seconds.');
+    }
+
+    if (error.message.startsWith('Ollama request failed')) {
+      throw error;
+    }
+
+    if (error.message.startsWith('Ollama returned an empty')) {
+      throw error;
+    }
+
+    throw new Error(
+      `Could not reach Ollama at ${env.ollamaBaseUrl}. Is Ollama running? (${error.message})`
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+module.exports = { complete };
+--- /mnt/data/step3check/server/src/services/aiReviewService.js
+const getAIProvider = require('./aiProviders');
+const buildReviewPrompt = require('./promptBuilder');
+const extractJson = require('../utils/extractJson');
+const validateAIOutput = require('../utils/validateAIOutput');
+const buildImprovedCode = require('../utils/buildImprovedCode');
+const {
+  calculateScoreBreakdown,
+  calculateFinalScore,
+} = require('../utils/calculateScore');
+
+function buildFallbackSummary(issues) {
+  if (!issues.length) {
+    return 'No significant issues were identified in the submitted code.';
+  }
+
+  const highestSeverity = ['critical', 'high', 'medium', 'low'].find((severity) =>
+    issues.some((issue) => issue.severity === severity)
+  );
+
+  return `${issues.length} issue${issues.length === 1 ? '' : 's'} identified; the most serious finding is ${highestSeverity}-severity.`;
+}
+
+async function generateReview(
+  { language, sourceCode },
+  provider = getAIProvider()
+) {
+  const prompt = buildReviewPrompt({ language, sourceCode });
+  const rawResponse = await provider.complete(prompt);
+
+  let output;
+
+  try {
+    output = extractJson(rawResponse);
+  } catch (error) {
+    throw new Error(
+      `${error.message} Raw response started with: "${String(rawResponse || '').slice(0, 120)}..."`
+    );
+  }
+
+  if (!output || typeof output !== 'object' || Array.isArray(output)) {
+    throw new Error('AI response must be a JSON object.');
+  }
+
+  if (typeof output.improvedCode !== 'string') {
+    output.improvedCode = '';
+  }
+
+  if (!Array.isArray(output.issues)) {
+    output.issues = [];
+  }
+
+  if (!Array.isArray(output.strengths)) {
+    output.strengths = [];
+  }
+
+  if (typeof output.summary !== 'string' || !output.summary.trim()) {
+    output.summary = buildFallbackSummary(output.issues);
+  }
+
+  // Scores are deliberately calculated by the server. The local LLM is
+  // responsible for finding issues and strengths, but it cannot repeatedly
+  // force the application into the same 80/90 score pattern.
+  if (!output.improvedCode.trim()) {
+    output.improvedCode = buildImprovedCode({
+      sourceCode,
+      issues: output.issues,
+    });
+  }
+
+  const scoreBreakdown = calculateScoreBreakdown({
+    sourceCode,
+    issues: output.issues,
+  });
+
+  output.scoreBreakdown = scoreBreakdown;
+  output.score = calculateFinalScore(scoreBreakdown);
+
+  validateAIOutput(output);
+
+  return output;
+}
+
+module.exports = {
+  generateReview,
+};
+--- /mnt/data/step3check/server/src/services/promptBuilder.js
+function buildReviewPrompt({ language, sourceCode }) {
+  return `You are a strict senior software engineer reviewing ${language} code.
+
+Analyze ONLY the submitted code. Do not assume missing code exists and do not invent problems.
+
+Your tasks:
+1. Identify genuine bugs or correctness problems.
+2. Identify genuine security vulnerabilities visible in the code.
+3. Identify meaningful performance problems.
+4. Identify maintainability/style problems only when they materially matter.
+5. List specific strengths that are actually demonstrated by the code.
+6. Provide a corrected version of the submitted code when there is a meaningful issue. Preserve the original intent and change only what is needed to fix the findings. If the code is already good, return the original code unchanged.
+
+Security rules:
+- Report SQL injection only when the code actually constructs a SQL query unsafely.
+- Report secret/password exposure only when sensitive data is actually exposed, logged, stored, or transmitted unsafely.
+- Do not invent authentication, authorization, injection, or other vulnerabilities that are not visible.
+
+Performance rules:
+- Do not call ordinary linear code inefficient.
+- Report nested loops or repeated expensive operations only when they are actually present and meaningful.
+
+Issue rules:
+- Use type: bug, security, performance, or style.
+- Use severity: low, medium, high, or critical.
+- Use a line number when you can identify one; otherwise use null.
+- Every issue must explain the concrete evidence in the submitted code.
+- Every issue must include a practical suggestion.
+- Do not manufacture issues just to make the review look detailed.
+
+Improved-code rules:
+- Return improvedCode as a plain source-code string, not Markdown.
+- Keep the same language and general behavior.
+- Fix every high or critical issue that is directly visible in the submitted code.
+- For SQL injection, use parameterized/prepared queries appropriate to the code shown.
+- Never include Markdown code fences in improvedCode.
+- If there is nothing to improve, return the original source code unchanged.
+
+Do NOT calculate an overall score. The application calculates scores separately from the findings.
+
+Return ONLY one valid JSON object. No Markdown. No commentary.
+
+Required structure:
+{
+  "summary": "concise evidence-based summary",
+  "issues": [
+    {
+      "type": "bug | security | performance | style",
+      "severity": "low | medium | high | critical",
+      "line": null,
+      "title": "short title",
+      "explanation": "specific evidence-based explanation",
+      "suggestion": "specific improvement"
+    }
+  ],
+  "strengths": ["specific genuine strength"],
+  "improvedCode": "corrected source code"
+}
+
+CODE TO REVIEW:
+${sourceCode}`;
+}
+
+module.exports = buildReviewPrompt;
+--- /mnt/data/step3check/server/src/utils/buildImprovedCode.js
+function buildImprovedCode({ sourceCode, issues }) {
+  if (!sourceCode || !Array.isArray(issues) || issues.length === 0) {
+    return sourceCode || '';
+  }
+
+  const hasSqlInjection = issues.some(
+    (issue) =>
+      issue?.type === 'security' &&
+      /sql\s*injection/i.test(`${issue.title || ''} ${issue.explanation || ''}`)
+  );
+
+  if (hasSqlInjection) {
+    const sqlAssignment = sourceCode.match(
+      /const\s+(\w+)\s*=\s*(["'`])([\s\S]*?)\2\s*\+\s*(\w+)\s*;?/
+    );
+
+    if (sqlAssignment) {
+      const [, variableName, quote, sqlPrefix, valueName] = sqlAssignment;
+      const placeholder = sqlPrefix.includes('?') ? sqlPrefix : `${sqlPrefix}?`;
+      const replacement = `const ${variableName} = ${quote}${placeholder}${quote};\n  return database.query(${variableName}, [${valueName}]);`;
+
+      const withoutReturn = sourceCode.replace(
+        new RegExp(
+          `const\\s+${variableName}\\s*=\\s*${quote}[\\s\\S]*?;?\\s*return\\s+database\\.query\\([\\s\\S]*?\\);?`,
+          'm'
+        ),
+        replacement
+      );
+
+      if (withoutReturn !== sourceCode) {
+        return withoutReturn;
+      }
+    }
+  }
+
+  return sourceCode;
+}
+
+module.exports = buildImprovedCode;
+--- /mnt/data/step3check/server/src/utils/calculateScore.js
+const WEIGHTS = {
+  correctness: 0.30,
+  security: 0.25,
+  performance: 0.15,
+  maintainability: 0.15,
+  quality: 0.15,
+};
+
+const SEVERITY_PENALTIES = {
+  critical: 40,
+  high: 25,
+  medium: 12,
+  low: 5,
+};
+
+function clamp(value) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function countMatches(text, pattern) {
+  return (text.match(pattern) || []).length;
+}
+
+function issueMatches(issue, terms) {
+  const text = `${issue?.title || ''} ${issue?.explanation || ''}`.toLowerCase();
+  return terms.some((term) => text.includes(term));
+}
+
+function calculateScoreBreakdown({ sourceCode = '', issues = [] } = {}) {
+  const code = String(sourceCode);
+  const normalizedIssues = Array.isArray(issues) ? issues : [];
+
+  // Start from a clean-code baseline. Scores fall only when there is evidence
+  // of a problem, rather than assuming every submission begins at 90.
+  const scores = {
+    correctness: 100,
+    security: 100,
+    performance: 100,
+    maintainability: 100,
+    quality: 100,
+  };
+
+  const applyIssuePenalty = (category, issue) => {
+    const penalty = SEVERITY_PENALTIES[issue?.severity] || 0;
+    if (penalty) scores[category] -= penalty;
+  };
+
+  for (const issue of normalizedIssues) {
+    switch (issue?.type) {
+      case 'bug':
+        applyIssuePenalty('correctness', issue);
+        break;
+      case 'security':
+        applyIssuePenalty('security', issue);
+        break;
+      case 'performance':
+        applyIssuePenalty('performance', issue);
+        break;
+      case 'style':
+        applyIssuePenalty('maintainability', issue);
+        applyIssuePenalty('quality', issue);
+        break;
+      default:
+        break;
+    }
+  }
+
+  // High-confidence source-code signals. We only apply these when the AI has
+  // not already reported the same issue, preventing double penalties.
+  const hasSqlInjection =
+    /(?:SELECT|INSERT|UPDATE|DELETE)[\s\S]{0,500}(?:\+|\$\{)[\s\S]{0,500}(?:username|password|input|query|id)/i.test(code) &&
+    /(?:SELECT|INSERT|UPDATE|DELETE)/i.test(code);
+
+  if (hasSqlInjection) {
+    if (!normalizedIssues.some((issue) => issueMatches(issue, ['sql injection', 'sql query', 'query injection']))) {
+      scores.security -= 45;
+    }
+    scores.quality -= 8;
+  }
+
+  const hasSensitiveLogging =
+    /console\.log\s*\([\s\S]{0,160}(?:password|token|secret|authorization)/i.test(code);
+
+  if (hasSensitiveLogging) {
+    if (!normalizedIssues.some((issue) => issueMatches(issue, ['secret exposure', 'sensitive data', 'sensitive information', 'password', 'credential']))) {
+      scores.security -= 20;
+    }
+    scores.quality -= 5;
+  }
+
+  const storesPassword =
+    /(?:password|passwd|pwd)\s*:/i.test(code) &&
+    /(?:insertOne|insertMany|create|save|updateOne|updateMany|set\s*\()/i.test(code);
+
+  if (storesPassword) scores.security -= 35;
+
+  if (/\beval\s*\(/i.test(code)) scores.security -= 35;
+
+  if (/(?:password|api[_-]?key|secret|token)\s*[:=]\s*['"][^'"]{6,}['"]/i.test(code)) {
+    scores.security -= 30;
+  }
+
+  const loopCount = countMatches(code, /\b(for|while)\s*\([^)]*\)\s*\{/g);
+  if (loopCount >= 2) scores.performance -= 15;
+
+  const looseEquality = countMatches(code, /(^|[^=])==([^=]|$)/g);
+  if (looseEquality > 0) scores.quality -= Math.min(10, looseEquality * 5);
+
+  if (/console\.log\s*\(/i.test(code)) scores.quality -= 3;
+
+  if (/async\s+function|async\s*\(/i.test(code) && !/\bawait\b/i.test(code)) {
+    scores.quality -= 4;
+  }
+
+  if (code.length > 12000) {
+    scores.maintainability -= 8;
+    scores.quality -= 5;
+  }
+
+  for (const category of Object.keys(scores)) {
+    scores[category] = clamp(scores[category]);
+  }
+
+  return scores;
+}
+
+function calculateFinalScore(scores) {
+  const weightedScore =
+    scores.correctness * WEIGHTS.correctness +
+    scores.security * WEIGHTS.security +
+    scores.performance * WEIGHTS.performance +
+    scores.maintainability * WEIGHTS.maintainability +
+    scores.quality * WEIGHTS.quality;
+
+  return Math.round(weightedScore);
+}
+
+module.exports = {
+  calculateScoreBreakdown,
+  calculateFinalScore,
+  WEIGHTS,
+};
+--- /mnt/data/step3check/server/src/utils/extractJson.js
+// LLMs are inconsistent about HOW they return JSON — sometimes clean,
+// sometimes wrapped in ```json fences, sometimes with a sentence of
+// commentary before or after it. This tries increasingly permissive
+// strategies until one produces valid JSON, and throws a clear error
+// if none of them do.
+//
+// This function only proves the text IS valid JSON — it says nothing
+// about whether the JSON has the fields a Review needs. That's a
+// separate validation step (Phase 11), deliberately kept apart from
+// "can we even parse this at all".
+function extractJson(text) {
+  if (typeof text !== 'string') {
+    throw new Error('Expected a string to extract JSON from.');
+  }
+
+  // Strategy 1: the whole response is already valid JSON.
+  try {
+    return JSON.parse(text);
+  } catch {
+    // fall through to the next strategy
+  }
+
+  // Strategy 2: JSON wrapped in a ```json ... ``` or ``` ... ``` fence.
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenceMatch) {
+    try {
+      return JSON.parse(fenceMatch[1].trim());
+    } catch {
+      // fall through
+    }
+  }
+
+  // Strategy 3: grab everything from the first '{' to the last '}' —
+  // catches cases like "Here is the review:\n{...}\nLet me know if..."
+  const firstBrace = text.indexOf('{');
+  const lastBrace = text.lastIndexOf('}');
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    try {
+      return JSON.parse(text.slice(firstBrace, lastBrace + 1));
+    } catch {
+      // fall through
+    }
+  }
+
+  throw new Error('Could not extract valid JSON from the AI response.');
+}
+
+module.exports = extractJson;
+--- /mnt/data/step3check/server/src/utils/token.js
+const jwt = require('jsonwebtoken');
+const env = require('../config/env');
+
+// A token's payload is just the user's id — everything else about the
+// user (email, etc.) is looked up fresh from the database when needed,
+// rather than trusted from the token. That way, if a user's data
+// changes, every request still sees current data, not a stale snapshot
+// baked into a token that might not expire for days.
+function generateToken(userId) {
+  return jwt.sign({ id: userId }, env.jwtSecret, { expiresIn: env.jwtExpiresIn });
+}
+
+function verifyToken(token) {
+  return jwt.verify(token, env.jwtSecret);
+}
+
+module.exports = { generateToken, verifyToken };
+--- /mnt/data/step3check/server/src/utils/validateAIOutput.js
+function isValidScore(value) {
+  return (
+    typeof value === 'number' &&
+    Number.isFinite(value) &&
+    value >= 0 &&
+    value <= 100
+  );
+}
+
+function validateAIOutput(output) {
+  if (!output || typeof output !== 'object') {
+    throw new Error('AI output must be an object.');
+  }
+
+  if (!output.summary || typeof output.summary !== 'string') {
+    throw new Error('AI output must contain a valid summary.');
+  }
+
+  if (!output.scoreBreakdown || typeof output.scoreBreakdown !== 'object') {
+    throw new Error('AI output must contain scoreBreakdown.');
+  }
+
+  const requiredScores = [
+    'correctness',
+    'security',
+    'performance',
+    'maintainability',
+    'quality',
+  ];
+
+  for (const category of requiredScores) {
+    if (!isValidScore(output.scoreBreakdown[category])) {
+      throw new Error(
+        `Invalid scoreBreakdown.${category}. Score must be a number between 0 and 100.`
+      );
+    }
+  }
+
+  if (!Array.isArray(output.issues)) {
+    throw new Error('AI output issues must be an array.');
+  }
+
+  const validTypes = ['bug', 'security', 'performance', 'style'];
+  const validSeverities = ['low', 'medium', 'high', 'critical'];
+
+  for (const issue of output.issues) {
+    if (!issue || typeof issue !== 'object') {
+      throw new Error('Each issue must be an object.');
+    }
+
+    if (!validTypes.includes(issue.type)) {
+      throw new Error(`Invalid issue type: ${issue.type}`);
+    }
+
+    if (!validSeverities.includes(issue.severity)) {
+      throw new Error(`Invalid issue severity: ${issue.severity}`);
+    }
+
+    if (typeof issue.title !== 'string') {
+      throw new Error('Issue title must be a string.');
+    }
+
+    if (typeof issue.explanation !== 'string') {
+      throw new Error('Issue explanation must be a string.');
+    }
+
+    if (typeof issue.suggestion !== 'string') {
+      throw new Error('Issue suggestion must be a string.');
+    }
+  }
+
+  if (!Array.isArray(output.strengths)) {
+    throw new Error('AI output strengths must be an array.');
+  }
+
+  if (typeof output.improvedCode !== 'string') {
+    throw new Error('AI output improvedCode must be a string.');
+  }
+
+  return true;
+}
+
+module.exports = validateAIOutput;
