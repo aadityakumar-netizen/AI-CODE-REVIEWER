@@ -1,3 +1,4 @@
+import React from 'react';
 import './ReviewResult.css';
 
 const SEVERITY_CLASS = {
@@ -44,8 +45,18 @@ function getScoreLevel(score) {
 }
 
 function ReviewResult({ review }) {
+  const [copyStatus, setCopyStatus] = React.useState("Copy code");
+
   const copyCode = async () => {
-    if (review.improvedCode) await navigator.clipboard.writeText(review.improvedCode);
+    try {
+      if (!review.improvedCode) return;
+      await navigator.clipboard.writeText(review.improvedCode);
+      setCopyStatus("✓ Copied!");
+      setTimeout(() => setCopyStatus("Copy code"), 2000);
+    } catch {
+      setCopyStatus("Copy failed");
+      setTimeout(() => setCopyStatus("Copy code"), 2000);
+    }
   };
   return (
     <div className="review-result">
@@ -170,7 +181,7 @@ function ReviewResult({ review }) {
       {/* Improved Code */}
       {review.improvedCode && (
         <div className="improved-code">
-          <div className="improved-heading"><h2>Suggested improved code</h2><button type="button" onClick={copyCode}>Copy code</button></div>
+          <div className="improved-heading"><h2>Suggested improved code</h2><button type="button" onClick={copyCode}>{copyStatus}</button></div>
 
           <pre>
             <code>{review.improvedCode}</code>
