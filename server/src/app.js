@@ -1,9 +1,8 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 
 const env = require('./config/env');
-const connectDB = require('./config/db');
 
 const errorHandler = require('./middleware/errorHandler');
 const notFound = require('./middleware/notFound');
@@ -42,16 +41,6 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Ensure MongoDB is connected before any database-dependent API route.
-app.use('/api', async (req, res, next) => {
-  try {
-    await connectDB();
-    next();
-  } catch (error) {
-    console.error('MongoDB connection failed:', error.message);
-    next(error);
-  }
-});
 
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/auth', require('./routes/auth'));

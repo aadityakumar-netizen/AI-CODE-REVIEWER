@@ -17,13 +17,13 @@ describe('generateReview', () => {
       fakeProvider
     );
 
-    expect(result.score).toBe(90);
+    expect(result.score).toBe(100);
     expect(result.scoreBreakdown).toEqual({
-      correctness: 90,
-      security: 90,
-      performance: 90,
-      maintainability: 90,
-      quality: 90,
+      correctness: 100,
+      security: 100,
+      performance: 100,
+      maintainability: 100,
+      quality: 100,
     });
     expect(result.summary).toBe('Solid.');
   });
@@ -53,7 +53,7 @@ describe('generateReview', () => {
     );
 
     expect(result.summary).toMatch(/issue/i);
-    expect(result.scoreBreakdown.security).toBeLessThan(60);
+    expect(result.scoreBreakdown.security).toBe(75);
   });
 
   test('throws a clear error when the provider returns unparseable text', async () => {

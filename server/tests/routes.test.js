@@ -1,5 +1,7 @@
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-only-jwt-secret-for-route-tests';
 const request = require('supertest');
 const app = require('../src/app');
+const { generateToken } = require('../src/utils/token');
 
 describe('GET /api/health', () => {
   test('returns 200 with a success message', async () => {
@@ -39,7 +41,8 @@ describe('POST /api/reviews validation', () => {
 
 describe('GET /api/reviews/:id with a malformed id', () => {
   test('returns 400, not a raw 500', async () => {
-    const res = await request(app).get('/api/reviews/not-a-valid-id');
+    const token = generateToken('507f1f77bcf86cd799439011');
+    const res = await request(app).get('/api/reviews/not-a-valid-id').set('Authorization', 'Bearer ' + token);
     expect(res.status).toBe(400);
     expect(res.body.message).toMatch(/Invalid review ID/);
   });
