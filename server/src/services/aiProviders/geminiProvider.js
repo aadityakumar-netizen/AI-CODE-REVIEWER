@@ -1,4 +1,4 @@
-
+﻿
 const env = require('../../config/env');
 
 async function complete(prompt) {
@@ -34,7 +34,7 @@ async function complete(prompt) {
           ],
           generationConfig: {
             temperature: 0,
-            maxOutputTokens: 5000,
+            maxOutputTokens: 8000,
             responseMimeType: 'application/json',
           },
         }),
@@ -100,3 +100,4 @@ async function complete(prompt) {
 }
 
 module.exports = { complete };
+
